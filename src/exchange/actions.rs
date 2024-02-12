@@ -1,5 +1,5 @@
 use crate::{
-    exchange::{cancel::CancelRequest, order::OrderRequest},
+    exchange::{cancel::CancelRequest, order::OrderRequest, order::AmendRequest},
     signature::agent::mainnet::Agent,
 };
 use ethers::types::H160;
@@ -31,6 +31,13 @@ pub struct UpdateIsolatedMargin {
 #[serde(rename_all = "camelCase")]
 pub struct BulkOrder {
     pub orders: Vec<OrderRequest>,
+    pub grouping: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkAmend {
+    pub orders: Vec<AmendRequest>,
     pub grouping: String,
 }
 

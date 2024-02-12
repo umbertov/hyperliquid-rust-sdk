@@ -2,12 +2,13 @@ use crate::{
     consts::MAINNET_API_URL,
     exchange::{
         actions::{
-            AgentConnect, BulkCancel, BulkOrder, UpdateIsolatedMargin, UpdateLeverage, UsdcTransfer,
+            AgentConnect, BulkAmend, BulkCancel, BulkOrder, UpdateIsolatedMargin, UpdateLeverage,
+            UsdcTransfer,
         },
         cancel::CancelRequest,
         ClientCancelRequest, ClientOrderRequest,
     },
-    helpers::{generate_random_key, EthChain, next_nonce},
+    helpers::{generate_random_key, next_nonce, EthChain},
     info::info_client::InfoClient,
     meta::Meta,
     prelude::*,
@@ -26,6 +27,8 @@ use ethers::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use super::order::ClientAmendRequest;
 
 pub struct ExchangeClient {
     pub http_client: HttpClient,
@@ -53,12 +56,14 @@ pub enum Actions {
     UpdateIsolatedMargin(UpdateIsolatedMargin),
     Order(BulkOrder),
     Cancel(BulkCancel),
+    Amend(BulkAmend),
     Connect(AgentConnect),
 }
 
 impl Actions {
     fn hash(&self, timestamp: u64, vault_address: Option<H160>) -> Result<H256> {
-        let mut bytes = rmp_serde::to_vec_named(self).map_err(|e| Error::RmpParse(e.to_string()))?;
+        let mut bytes =
+            rmp_serde::to_vec_named(self).map_err(|e| Error::RmpParse(e.to_string()))?;
         bytes.extend(timestamp.to_be_bytes());
         if let Some(vault_address) = vault_address {
             bytes.push(1);
@@ -188,7 +193,42 @@ impl ExchangeClient {
         });
         let connection_id = action.hash(timestamp, self.vault_address)?;
         let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
-        
+
+        let is_mainnet = self.http_client.base_url == BaseUrl::Mainnet.get_url();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.post(action, signature, timestamp).await
+    }
+
+    pub async fn amend(
+        &self,
+        order: ClientAmendRequest,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
+        self.bulk_amend(vec![order], wallet).await
+    }
+
+    pub async fn bulk_amend(
+        &self,
+        orders: Vec<ClientAmendRequest>,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let mut transformed_orders = Vec::new();
+
+        for order in orders {
+            transformed_orders.push(order.convert(&self.coin_to_asset)?);
+        }
+
+        let action = Actions::Amend(BulkAmend {
+            orders: transformed_orders,
+            grouping: "na".to_string(),
+        });
+        let connection_id = action.hash(timestamp, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+
         let is_mainnet = self.http_client.base_url == BaseUrl::Mainnet.get_url();
         let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
 
@@ -228,8 +268,7 @@ impl ExchangeClient {
         });
         let connection_id = action.hash(timestamp, self.vault_address)?;
 
-        let action = serde_json::to_value(&action)
-        .map_err(|e| Error::JsonParse(e.to_string()))?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
         let is_mainnet = self.http_client.base_url == BaseUrl::Mainnet.get_url();
         let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
 
